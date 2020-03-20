@@ -8,6 +8,7 @@ import android.Manifest;
 import android.app.Activity;
 import android.content.ContentUris;
 import android.content.ContentValues;
+import android.content.Context;
 import android.content.pm.PackageManager;
 import android.database.Cursor;
 import android.database.sqlite.SQLiteDatabase;
@@ -26,8 +27,6 @@ import android.widget.Toast;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.util.ArrayList;
-import java.util.Arrays;
-import java.util.concurrent.ExecutionException;
 
 import static com.example.mydatabaseapp.SampleConstants.CAMERA_BUCKET;
 
@@ -35,8 +34,11 @@ public class MainActivity extends AppCompatActivity {
     private static final String TAG = MainActivity.class.getSimpleName();
     private ArrayList<String> mListOfAllImages = new ArrayList<>();
     private ArrayList<Uri> mListOfAllUris = new ArrayList<>();
-    private ArrayList<byte[]> mBlobs = new ArrayList<>();
+    private ArrayList<byte[]> mListOfBlobs = new ArrayList<>();
+    private ArrayList<Bitmap> mListOfBitmaps = new ArrayList<>();
     private SampleDBSQLiteHelper mDbHelper;
+    private boolean mPermGranted;
+    private Context mContext;
 
     private static final int REQUEST_EXTERNAL_STORAGE = 1;
     private static String[] PERMISSIONS_STORAGE = {
@@ -62,11 +64,12 @@ public class MainActivity extends AppCompatActivity {
             case REQUEST_EXTERNAL_STORAGE: {
                 if (grantResults.length > 0
                         && grantResults[0] == PackageManager.PERMISSION_GRANTED) {
-
+                    Log.i(TAG, "permissions granted");
+                    mPermGranted = true;
                 } else {
-
+                    Log.i(TAG, "permissions not granted");
+                    mPermGranted = false;
                 }
-                return;
             }
         }
     }
@@ -75,10 +78,10 @@ public class MainActivity extends AppCompatActivity {
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         setContentView(R.layout.activity_main);
+        mContext = getApplicationContext();
 
         verifyStoragePermissions(this);
-        mDbHelper = new SampleDBSQLiteHelper(getApplicationContext());
-        Log.i(TAG, "DB set up!");
+        mDbHelper = new SampleDBSQLiteHelper(mContext);
 
     }
 
@@ -90,12 +93,15 @@ public class MainActivity extends AppCompatActivity {
             String[] selectionArgs = new String[]{CAMERA_BUCKET};
 
             Cursor imageCursor = getApplicationContext().getContentResolver().query(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, null, selection, selectionArgs, null);
-            if (imageCursor != null && imageCursor.moveToFirst()) {
+            if (imageCursor == null || imageCursor.getCount() == 0) {
+                Log.i(TAG, "failed to fetch images from media store!");
+                Toast.makeText(mContext, "failed to fetch images from media store!", Toast.LENGTH_LONG).show();
+                return false;
+            }
+            if (imageCursor.moveToFirst()) {
                 do {
                     if (Build.VERSION.SDK_INT >= 29) {
-                      //
-                      int columnValue = imageCursor.getInt(imageCursor.getColumnIndex(MediaStore.Images.ImageColumns._ID));
-                      Log.i(TAG, String.valueOf(columnValue));
+                        int columnValue = imageCursor.getInt(imageCursor.getColumnIndex(MediaStore.Images.ImageColumns._ID));
                         mListOfAllUris.add(ContentUris.withAppendedId(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, columnValue));
                     } else {
                         mListOfAllImages.add(imageCursor.getString(imageCursor.getColumnIndex(MediaStore.Images.Media.DATA)));
@@ -108,14 +114,19 @@ public class MainActivity extends AppCompatActivity {
     }
 
     public void onFetchClicked(View view) {
-        boolean result = false;
-        try {
-            result = (boolean) new FetchMediaImages().execute().get();
-        } catch (Exception e) {
-            e.printStackTrace();
-        }
-        if (result) {
-            Toast.makeText(this, "fetched images from media store", Toast.LENGTH_LONG).show();
+        if (!mPermGranted) {
+            Toast.makeText(mContext, "please grant necessary permissions to continue!", Toast.LENGTH_LONG).show();
+            return;
+        } else {
+            boolean result = false;
+            try {
+                result = (boolean) new FetchMediaImages().execute().get();
+            } catch (Exception e) {
+                e.printStackTrace();
+            }
+            if (result) {
+                Toast.makeText(mContext, "fetched " + mListOfAllUris.size() + " images from media store", Toast.LENGTH_LONG).show();
+            }
         }
     }
 
@@ -123,35 +134,90 @@ public class MainActivity extends AppCompatActivity {
 
         @Override
         protected Object doInBackground(Object[] objects) {
-            SQLiteDatabase database = mDbHelper.getWritableDatabase();
-            ContentValues values = new ContentValues();
             byte[] blob;
             if (Build.VERSION.SDK_INT >= 29) {
                 for (Uri imageUri : mListOfAllUris) {
                     blob = convertUriToBlob(imageUri);
-                    values.put(SampleDBContract.Images.COLUMN_NAME, blob);
-                    database.insert(SampleDBContract.Images.TABLE_NAME, null, values);
+                    if (insertBlobToDB(blob) >= 0) {
+                        Log.i(TAG, "inserted blob for " + imageUri);
+                        mListOfBlobs.add(blob);
+                    } else {
+                        Log.i(TAG, "failed to insert blob for " + imageUri);
+                    }
                 }
             } else {
                 for (String imagePath : mListOfAllImages) {
                     blob = convertImageToBlob(imagePath);
-                    values.put(SampleDBContract.Images.COLUMN_NAME, blob);
-                    database.insert(SampleDBContract.Images.TABLE_NAME, null, values);
+                    if (insertBlobToDB(blob) >= 0) {
+                        Log.i(TAG, "inserted blob for " + imagePath);
+                        mListOfBlobs.add(blob);
+                    } else {
+                        Log.i(TAG, "failed to insert blob for " + imagePath);
+                    }
                 }
             }
-            return true;
+            return mListOfBlobs.size() > 0;
+        }
+
+        private byte[] convertImageToBlob(String imagePath) {
+            BitmapFactory.Options options = new BitmapFactory.Options();
+            options.inPreferredConfig = Bitmap.Config.ARGB_8888;
+            Bitmap bitmap = BitmapFactory.decodeFile(imagePath, options);
+            if (bitmap != null) {
+                ByteArrayOutputStream stream = new ByteArrayOutputStream();
+                bitmap.compress(Bitmap.CompressFormat.PNG, 0, stream);
+                return stream.toByteArray();
+            }
+            return null;
+        }
+
+        @RequiresApi(api = Build.VERSION_CODES.KITKAT)
+        private byte[] convertUriToBlob(Uri imageUri) {
+            try (ParcelFileDescriptor pfd = getApplicationContext().getContentResolver().openFileDescriptor(imageUri, "r")) {
+                if (pfd != null) {
+                    Bitmap bitmap = BitmapFactory.decodeFileDescriptor(pfd.getFileDescriptor());
+                    if (bitmap != null) {
+                        ByteArrayOutputStream stream = new ByteArrayOutputStream();
+                        bitmap.compress(Bitmap.CompressFormat.PNG, 0, stream);
+                        return stream.toByteArray();
+                    }
+                }
+            } catch (IOException ex) {
+                ex.printStackTrace();
+            }
+            return null;
+        }
+
+        private long insertBlobToDB(byte[] blob) {
+            ContentValues values;
+            long rowId = -1;
+            if (blob != null) {
+                values = new ContentValues();
+                values.put(SampleDBContract.Images.COLUMN_NAME, blob);
+                rowId = mDbHelper.getWritableDatabase().insert(SampleDBContract.Images.TABLE_NAME, null, values);
+            } else {
+                Log.i(TAG, "blob is null!");
+            }
+            return rowId;
         }
     }
 
     public void onSaveClicked(View view) {
-        boolean result = false;
-        try {
-            result = (boolean) new SaveBlob().execute().get();
-        } catch (Exception e) {
-            e.printStackTrace();
-        }
-        if (result) {
-            Toast.makeText(this, "Blobs inserted", Toast.LENGTH_LONG).show();
+        if (!mPermGranted) {
+            Toast.makeText(mContext, "please grant necessary permissions to continue!", Toast.LENGTH_LONG).show();
+            return;
+        } else {
+            boolean result = false;
+            try {
+                result = (boolean) new SaveBlob().execute().get();
+            } catch (Exception e) {
+                e.printStackTrace();
+            }
+            if (result) {
+                Toast.makeText(mContext, mListOfBlobs.size() + " Blobs inserted", Toast.LENGTH_LONG).show();
+            } else {
+                Toast.makeText(mContext, "failed to insert blobs!", Toast.LENGTH_LONG).show();
+            }
         }
     }
 
@@ -175,47 +241,71 @@ public class MainActivity extends AppCompatActivity {
                     null,
                     null
             );
-            if (cursor != null && cursor.moveToFirst()) {
+            if (cursor == null || cursor.getCount() == 0) {
+                Log.i(TAG, "failed to read blob from DB!");
+                return false;
+            }
+            if (cursor.moveToFirst()) {
                 do {
                     byte[] blob = cursor.getBlob(cursor.getColumnIndex(SampleDBContract.Images.COLUMN_NAME));
-                    Log.i(TAG, String.valueOf(blob));
                 } while (cursor.moveToNext());
             }
-            return null;
+            cursor.close();
+            return true;
         }
     }
 
     public void onReadClicked(View view) {
-        new ReadBlob().execute();
-        Toast.makeText(this, "Blobs read!", Toast.LENGTH_LONG).show();
-    }
-
-    private byte[] convertImageToBlob(String imagePath) {
-        BitmapFactory.Options options = new BitmapFactory.Options();
-        options.inPreferredConfig = Bitmap.Config.ARGB_8888;
-        Bitmap bitmap = BitmapFactory.decodeFile(imagePath, options);
-        if (bitmap != null) {
-            ByteArrayOutputStream stream = new ByteArrayOutputStream();
-            bitmap.compress(Bitmap.CompressFormat.PNG, 0, stream);
-            return stream.toByteArray();
-        }
-        return null;
-    }
-
-    @RequiresApi(api = Build.VERSION_CODES.KITKAT)
-    private byte[] convertUriToBlob(Uri imageUri) {
-        try (ParcelFileDescriptor pfd = getApplicationContext().getContentResolver().openFileDescriptor(imageUri, "r")) {
-            if (pfd != null) {
-                Bitmap bitmap = BitmapFactory.decodeFileDescriptor(pfd.getFileDescriptor());
-                if (bitmap != null) {
-                    ByteArrayOutputStream stream = new ByteArrayOutputStream();
-                    bitmap.compress(Bitmap.CompressFormat.PNG, 0, stream);
-                    return stream.toByteArray();
-                }
+        if (!mPermGranted) {
+            Toast.makeText(mContext, "please grant necessary permissions to continue!", Toast.LENGTH_LONG).show();
+            return;
+        } else {
+            boolean result = false;
+            try {
+                result = (boolean) new ReadBlob().execute().get();
+            } catch (Exception e) {
+                e.printStackTrace();
             }
-        } catch (IOException ex) {
-            ex.printStackTrace();
+            if (result) {
+                Toast.makeText(mContext, "Blobs read!", Toast.LENGTH_LONG).show();
+            } else {
+                Toast.makeText(mContext, "failed to read blobs!", Toast.LENGTH_LONG).show();
+            }
         }
-        return null;
+    }
+
+    public class getBitmapFromBlob extends AsyncTask {
+
+        @Override
+        protected Object doInBackground(Object[] objects) {
+            for (byte[] blob : mListOfBlobs) {
+                mListOfBitmaps.add(BitmapFactory.decodeByteArray(blob, 0, blob.length));
+            }
+            return mListOfBitmaps.size();
+        }
+    }
+
+    @Override
+    protected void onDestroy() {
+        super.onDestroy();
+        if (mDbHelper != null) {
+            mDbHelper.close();
+            Log.i(TAG, "DB closed!");
+        }
+    }
+
+    public void onGetBitmapClicked(View view) {
+        int result = 0;
+        try {
+            result = (int) new getBitmapFromBlob().execute().get();
+        } catch (Exception e) {
+            e.printStackTrace();
+        }
+
+        if (result > 0) {
+            Toast.makeText(mContext, mListOfBitmaps.size() + " Blobs converted to Bitmap!", Toast.LENGTH_LONG).show();
+        } else {
+            Toast.makeText(mContext, "error while converting blobs to Bitmap!", Toast.LENGTH_LONG).show();
+        }
     }
 }
