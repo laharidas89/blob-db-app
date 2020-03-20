@@ -255,6 +255,7 @@ public class MainActivity extends AppCompatActivity {
         }
     }
 
+    
     public void onReadClicked(View view) {
         if (!mPermGranted) {
             Toast.makeText(mContext, "please grant necessary permissions to continue!", Toast.LENGTH_LONG).show();
