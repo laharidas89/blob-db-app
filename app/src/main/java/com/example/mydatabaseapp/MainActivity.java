@@ -96,6 +96,7 @@ public class MainActivity extends AppCompatActivity {
             if (imageCursor == null || imageCursor.getCount() == 0) {
                 Log.i(TAG, "failed to fetch images from media store!");
                 Toast.makeText(mContext, "failed to fetch images from media store!", Toast.LENGTH_LONG).show();
+                imageCursor.close();
                 return false;
             }
             if (imageCursor.moveToFirst()) {
@@ -243,6 +244,7 @@ public class MainActivity extends AppCompatActivity {
             );
             if (cursor == null || cursor.getCount() == 0) {
                 Log.i(TAG, "failed to read blob from DB!");
+                cursor.close();
                 return false;
             }
             if (cursor.moveToFirst()) {
@@ -255,7 +257,7 @@ public class MainActivity extends AppCompatActivity {
         }
     }
 
-    
+
     public void onReadClicked(View view) {
         if (!mPermGranted) {
             Toast.makeText(mContext, "please grant necessary permissions to continue!", Toast.LENGTH_LONG).show();
