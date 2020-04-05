@@ -1,9 +1,5 @@
 package com.example.mydatabaseapp;
 
-import androidx.annotation.RequiresApi;
-import androidx.appcompat.app.AppCompatActivity;
-import androidx.core.app.ActivityCompat;
-
 import android.Manifest;
 import android.app.Activity;
 import android.content.ContentUris;
@@ -11,6 +7,7 @@ import android.content.ContentValues;
 import android.content.Context;
 import android.content.pm.PackageManager;
 import android.database.Cursor;
+import android.database.DatabaseUtils;
 import android.database.sqlite.SQLiteDatabase;
 import android.graphics.Bitmap;
 import android.graphics.BitmapFactory;
@@ -23,6 +20,10 @@ import android.provider.MediaStore;
 import android.util.Log;
 import android.view.View;
 import android.widget.Toast;
+
+import androidx.annotation.RequiresApi;
+import androidx.appcompat.app.AppCompatActivity;
+import androidx.core.app.ActivityCompat;
 
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
@@ -226,33 +227,54 @@ public class MainActivity extends AppCompatActivity {
 
         @Override
         protected Object doInBackground(Object[] objects) {
-            SQLiteDatabase database = mDbHelper.getReadableDatabase();
-
-            String[] projection = {
-                    SampleDBContract.Images._ID,
-                    SampleDBContract.Images.COLUMN_NAME,
-            };
-
-            Cursor cursor = database.query(
-                    SampleDBContract.Images.TABLE_NAME,
-                    projection,
-                    null,
-                    null,
-                    null,
-                    null,
-                    null
-            );
-            if (cursor == null || cursor.getCount() == 0) {
-                Log.i(TAG, "failed to read blob from DB!");
-                cursor.close();
+            Log.i("ReadBlob", "started reading blobs");
+            SQLiteDatabase readableDatabase = mDbHelper.getReadableDatabase();
+            int rowCount = (int) DatabaseUtils.queryNumEntries(readableDatabase, SampleDBContract.Images.TABLE_NAME);
+            Log.i("ReadBlob", "number of entries in table : " + rowCount);
+            if (rowCount == 0) {
                 return false;
             }
-            if (cursor.moveToFirst()) {
-                do {
-                    byte[] blob = cursor.getBlob(cursor.getColumnIndex(SampleDBContract.Images.COLUMN_NAME));
-                } while (cursor.moveToNext());
+            ArrayList<byte[]> wholeBlobDataList = new ArrayList<>();
+            String queryLength;
+            Cursor cursor;
+            int length = 0;
+            int from, to;
+            int i;
+            int chunk_size = (1024 * 1024);
+            for (int id = 1; id <= rowCount; id++) {
+                Log.i("ReadBlob", "started extracting data for row " + id);
+                queryLength = "SELECT length(blob) FROM " + SampleDBContract.Images.TABLE_NAME + " WHERE _id=?";
+                cursor = readableDatabase.rawQuery(queryLength, new String[]{String.valueOf(id)});
+                if (cursor.moveToFirst()) {
+                    length = cursor.getInt(0);
+                }
+                int numSteps = length / chunk_size + 1;
+                Log.i("ReadBlob", "Length of blob is " + length + " Number of Chunks = " + numSteps + " Chunk Size = " + chunk_size);
+
+                i = 0;
+                from = 1;
+                to = chunk_size;
+                while (i < numSteps && length > 0) {
+                    if (to > length) to = length;
+                    String query = "SELECT substr(blob," + from + "," + (chunk_size) + ") FROM " + SampleDBContract.Images.TABLE_NAME + " WHERE _id=?";
+                    Log.i("ReadBlob", "substring query : " + query);
+                    cursor.close();
+                    cursor = readableDatabase.rawQuery(query, new String[]{String.valueOf(id)});
+                    if (cursor.moveToFirst()) {
+                        wholeBlobDataList.add(cursor.getBlob(0));
+                        Log.i("ReadBlob", "Obtained Blob who's length is " + cursor.getBlob(0).length);
+                    }
+                    cursor.close();
+                    i++;
+                    from = (i * chunk_size) + 1;
+                    to = from + chunk_size;
+                }
+                if (!cursor.isClosed()) {
+                    cursor.close();
+                }
+                Log.i("ReadBlob", "finished extracting data for row " + id);
             }
-            cursor.close();
+            Log.i("ReadBlob", "finished reading blobs");
             return true;
         }
     }
@@ -277,7 +299,7 @@ public class MainActivity extends AppCompatActivity {
         }
     }
 
-    public class getBitmapFromBlob extends AsyncTask {
+    /*public class getBitmapFromBlob extends AsyncTask {
 
         @Override
         protected Object doInBackground(Object[] objects) {
@@ -286,7 +308,7 @@ public class MainActivity extends AppCompatActivity {
             }
             return mListOfBitmaps.size();
         }
-    }
+    }*/
 
     @Override
     protected void onDestroy() {
@@ -297,7 +319,7 @@ public class MainActivity extends AppCompatActivity {
         }
     }
 
-    public void onGetBitmapClicked(View view) {
+    /*public void onGetBitmapClicked(View view) {
         int result = 0;
         try {
             result = (int) new getBitmapFromBlob().execute().get();
@@ -310,5 +332,5 @@ public class MainActivity extends AppCompatActivity {
         } else {
             Toast.makeText(mContext, "error while converting blobs to Bitmap!", Toast.LENGTH_LONG).show();
         }
-    }
+    }*/
 }
